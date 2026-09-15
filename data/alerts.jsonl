@@ -154,3 +154,4 @@
 {"id": 1, "detected_at": 1789390592.5000045, "kind": "calendar", "T_short": 0.004916, "T_long": 0.007656, "k_min": -0.35, "k_max": 0.35, "severity": 0.0028794233938538973}
 {"id": 1, "detected_at": 1789422776.3615623, "kind": "calendar", "T_short": 0.003896, "T_long": 0.006635, "k_min": -0.35, "k_max": 0.35, "severity": 0.0029271320455853123}
 {"id": 1, "detected_at": 1789448398.7043567, "kind": "calendar", "T_short": 0.005823, "T_long": 0.008562, "k_min": -0.35, "k_max": 0.35, "severity": 0.003827161460952409}
+{"id": 1, "detected_at": 1789491868.1853805, "kind": "calendar", "T_short": 0.001705, "T_long": 0.004444, "k_min": -0.35, "k_max": 0.35, "severity": 0.03117278749001913}

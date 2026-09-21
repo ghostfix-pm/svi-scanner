@@ -1,2 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# local data
 data/*.db
-!data/alerts.jsonl

@@ -18,25 +18,32 @@ __all__ = ["build_slices", "scan_surface"]
 
 
 def build_slices(quotes: list[dict], min_strikes: int = 5) -> dict[float, dict]:
-    """Group quotes by expiry; use mid IV for fitting, keep raw for severity."""
+    """Group quotes by expiry; use mid IV for fitting, keep raw for severity.
+
+    Quotes without a usable spot are skipped (log-moneyness is undefined)
+    rather than silently collapsed to k=0 -- a poisoned row otherwise fits a
+    constant and either trips bad_fit or produces a phantom arb.
+    """
     by_exp: dict[float, list[dict]] = {}
     for q in quotes:
         by_exp.setdefault(round(q["T"], 6), []).append(q)
     slices = {}
     for T, rows in sorted(by_exp.items()):
-        if len(rows) < min_strikes:
+        usable = [r for r in rows
+                  if np.isfinite(r.get("spot", np.nan)) and r.get("spot", 0) > 0
+                  and np.isfinite(r.get("K", np.nan)) and r.get("K", 0) > 0]
+        if len(usable) < min_strikes:
             continue
-        spot = np.nanmean([r.get("spot", np.nan) for r in rows])
+        spot = float(np.mean([r["spot"] for r in usable]))
         ks, mids = [], []
-        for r in sorted(rows, key=lambda r: r["K"]):
-            k = np.log(r["K"] / spot) if np.isfinite(spot) and spot > 0 else 0.0
-            ks.append(k)
+        for r in sorted(usable, key=lambda r: r["K"]):
+            ks.append(np.log(r["K"] / spot))
             mids.append((r["iv_bid"] + r["iv_ask"]) / 2.0)
         ks_arr = np.asarray(ks)
         w = (np.asarray(mids) ** 2) * T  # total variance
         params, rmse = fit_slice(ks_arr, w)
         slices[T] = {"params": params, "rmse": rmse, "ks": ks_arr,
-                     "w": w, "n": len(rows)}
+                     "w": w, "n": len(usable)}
     return slices
 
 

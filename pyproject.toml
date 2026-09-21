@@ -29,3 +29,7 @@ target-version = "py311"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["src"]
+markers = [
+    "slow: long-running calibration gate (reported but non-blocking)",
+]

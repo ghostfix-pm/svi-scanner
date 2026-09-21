@@ -11,6 +11,7 @@ import numpy as np
 
 __all__ = [
     "alert_stats",
+    "fetch_alerts",
     "fetch_chain",
     "init_store",
     "load_latest_snapshot",
@@ -53,13 +54,24 @@ def fetch_chain(currency: str = "BTC", n_expiries: int = 3) -> list[dict]:
             # Deribit timestamps are ms; T = years to maturity
             ttm_years = (ins["expiration_timestamp"] / 1000.0 - now_ms / 1000.0) / (365 * 24 * 3600)
             key = (ttm_years, float(ins["strike"]))
-            rec = out.setdefault(key, {"T": key[0], "K": key[1],
-                                       "iv_bid": bid_iv / 100.0,
-                                       "iv_ask": ask_iv / 100.0,
-                                       "mark_iv": (ticker.get("mark_iv") or 0) / 100.0,
-                                       "spot": float(ticker.get("underlying_price") or np.nan),
-                                       "n": 0})
+            rec = out.get(key)
+            if rec is None:
+                rec = out[key] = {"T": key[0], "K": key[1],
+                                  "iv_bid": bid_iv / 100.0,
+                                  "iv_ask": ask_iv / 100.0,
+                                  "mark_iv": (ticker.get("mark_iv") or 0) / 100.0,
+                                  "spot": float(ticker.get("underlying_price") or np.nan),
+                                  "n": 0}
+            else:
+                # same (expiry, strike) appears for call AND put: average the
+                # bid/ask IVs so the mid is a genuine cross-instrument mid
+                rec["iv_bid"] += bid_iv / 100.0
+                rec["iv_ask"] += ask_iv / 100.0
             rec["n"] += 1
+    for rec in out.values():
+        if rec["n"] > 1:
+            rec["iv_bid"] /= rec["n"]
+            rec["iv_ask"] /= rec["n"]
     return list(out.values())
 
 
@@ -74,12 +86,14 @@ CREATE TABLE IF NOT EXISTS alerts (
     k_min REAL, k_max REAL, severity REAL,
     quote_json TEXT, resolved_at REAL
 );
+CREATE INDEX IF NOT EXISTS idx_quotes_ts ON quotes(ts);
 """
 
 
 def init_store(path: str = "data/scanner.db") -> sqlite3.Connection:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
     con.commit()
     return con
@@ -98,8 +112,10 @@ def save_quotes(con: sqlite3.Connection, rows: list[dict]) -> int:
 def load_latest_snapshot(con: sqlite3.Connection, max_age_sec: float = 3600) -> list[dict]:
     cutoff = time.time() - max_age_sec
     cur = con.execute(
-        "SELECT T,K,iv_bid,iv_ask FROM quotes WHERE ts > ? ORDER BY T, K", (cutoff,))
-    return [{"T": t, "K": k, "iv_bid": b, "iv_ask": a} for t, k, b, a in cur.fetchall()]
+        "SELECT T,K,iv_bid,iv_ask,mark_iv,spot FROM quotes WHERE ts > ? ORDER BY T, K",
+        (cutoff,))
+    return [{"T": t, "K": k, "iv_bid": b, "iv_ask": a, "mark_iv": m, "spot": s}
+            for t, k, b, a, m, s in cur.fetchall()]
 
 
 def log_alert(con: sqlite3.Connection, kind: str, expiry_short: float,
@@ -130,3 +146,21 @@ def alert_stats(con: sqlite3.Connection) -> dict:
         kind: {"count": n, "open_share": round(open_share, 3), "avg_severity": round(sev, 4)}
         for kind, n, open_share, sev in rows
     }
+
+
+def fetch_alerts(con: sqlite3.Connection, kind: str | None = None,
+                 unresolved_only: bool = False, limit: int = 20) -> list[dict]:
+    """Recent alerts for `sviscan list`; newest first."""
+    where, args = [], []
+    if kind:
+        where.append("kind = ?")
+        args.append(kind)
+    if unresolved_only:
+        where.append("resolved_at IS NULL")
+    query = ("SELECT id, detected_at, kind, expiry_short, expiry_long,"
+             " k_min, k_max, severity, resolved_at FROM alerts")
+    if where:
+        query += " WHERE " + " AND ".join(where)
+    query += " ORDER BY detected_at DESC LIMIT ?"
+    args.append(limit)
+    return [dict(row) for row in con.execute(query, args).fetchall()]

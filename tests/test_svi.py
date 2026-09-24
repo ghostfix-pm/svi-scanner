@@ -66,7 +66,7 @@ def _synthetic_quotes() -> list[dict]:
     spot = 100.0
     base_iv = {30 * 86400: 0.55, 90 * 86400: 0.60}
     for T_sec, iv0 in base_iv.items():
-        T = T_sec / 365.0 / 24.0  # ~years-ish scale irrelevant for consistency
+        T = T_sec / (365.0 * 24.0 * 3600.0)  # seconds -> years to maturity (30d ~= 0.082y)
         for strike in np.linspace(70, 130, 13):
             k = np.log(strike / spot)
             iv = iv0 * (1 - 0.35 * k + 1.2 * k * k)
@@ -87,9 +87,13 @@ def test_scanner_reports_no_false_positives_on_clean_surface():
 
 def test_scanner_skips_bad_fits_with_explicit_alert():
     quotes = _synthetic_quotes()
-    # corrupt one expiry so its fit is garbage
+    # corrupt the SHORT expiry so its fit is garbage. (T is years-to-maturity:
+    # 30d ~= 0.082y, 90d ~= 0.247y — select by the smallest T rather than a
+    # hardcoded absolute, which is what silently broke when the fixture's
+    # seconds->years conversion was corrected.)
+    short_T = min(q["T"] for q in quotes)
     for q in quotes:
-        if q["T"] < 0.002:
+        if q["T"] == short_T:
             q["iv_bid"], q["iv_ask"] = q["iv_bid"] * 3, q["iv_ask"] * 3 + 0.05
     slices = build_slices(quotes)
     alerts = scan_surface(slices, rmse_gate=1e-4)

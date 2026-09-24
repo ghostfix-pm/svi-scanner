@@ -95,6 +95,11 @@ def init_store(path: str = "data/scanner.db") -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.executescript(_SCHEMA)
+    # One-time normalization: rows written before single-expiry alerts used
+    # NULL stored a literal 0.0 in expiry_long, which `list` then rendered as
+    # "T=0.080->0.000". Treat 0 as "no second expiry" — idempotent, and safe
+    # because a real expiry_long of exactly 0.0 years is not physically meaningful.
+    con.execute("UPDATE alerts SET expiry_long = NULL WHERE expiry_long = 0")
     con.commit()
     return con
 

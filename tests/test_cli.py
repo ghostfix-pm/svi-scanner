@@ -12,7 +12,7 @@ def _seed_db(db_path, n_strikes=11):
     rows = []
     spot = 100.0
     for T_sec, iv0 in ((30 * 86400, 0.55), (90 * 86400, 0.60)):
-        T = T_sec / 365.0 / 24.0
+        T = T_sec / (365.0 * 24.0 * 3600.0)  # seconds -> years to maturity
         for strike in [70 + i * 6 for i in range(n_strikes)]:
             k = (strike / spot - 1.0)  # rough moneyness proxy is fine for CLI seeding
             iv = iv0 * (1 - 0.3 * k + 1.0 * k * k)

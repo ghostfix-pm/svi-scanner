@@ -7,6 +7,7 @@ import pytest
 from sviscan.store import (
     alert_stats,
     fetch_alerts,
+    fetch_chain,
     init_store,
     load_latest_snapshot,
     log_alert,
@@ -17,6 +18,113 @@ from sviscan.store import (
 
 def _quote(T=0.08, K=100.0, bid=0.55, ask=0.56, spot=100.0, mark=0.555):
     return {"T": T, "K": K, "iv_bid": bid, "iv_ask": ask, "spot": spot, "mark_iv": mark}
+
+
+# ----------------------------------------------------------------- fetch_chain
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    """Minimal httpx.Client stand-in for the two Deribit endpoints fetch_chain uses."""
+
+    def __init__(self, instruments, tickers):
+        self._instruments = instruments
+        self._tickers = tickers
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, params=None):
+        if url.endswith("/get_instruments"):
+            return _FakeResponse({"result": self._instruments})
+        assert params is not None, "ticker endpoint requires instrument_name"
+        return _FakeResponse({"result": self._tickers[params["instrument_name"]]})
+
+
+def _install_fake_chain(monkeypatch, instruments, tickers):
+    monkeypatch.setattr(
+        "sviscan.store.httpx.Client", lambda *a, **k: _FakeClient(instruments, tickers)
+    )
+
+
+def _instrument(name, expiry_ms, strike):
+    return {"instrument_name": name, "expiration_timestamp": expiry_ms, "strike": strike}
+
+
+def _ticker(bid_iv, ask_iv, spot=100.0, mark_iv=None):
+    return {"bid_iv": bid_iv, "ask_iv": ask_iv, "underlying_price": spot,
+            "mark_iv": bid_iv if mark_iv is None else mark_iv}
+
+
+def test_fetch_chain_merges_call_and_put_at_same_expiry_strike(monkeypatch):
+    """A call and a put on the same (expiry, strike) must collapse into ONE
+    quote carrying the cross-instrument mid — this is the only production
+    change in the PR that otherwise had no offline coverage."""
+    expiry = int((time.time() + 30 * 86400) * 1000)
+    instruments = [
+        _instrument(f"BTC-{expiry}-C-100", expiry, 100),
+        _instrument(f"BTC-{expiry}-P-100", expiry, 100),
+    ]
+    tickers = {
+        f"BTC-{expiry}-C-100": _ticker(50.0, 52.0),   # 0.50 / 0.52
+        f"BTC-{expiry}-P-100": _ticker(54.0, 56.0),   # 0.54 / 0.56
+    }
+    _install_fake_chain(monkeypatch, instruments, tickers)
+
+    quotes = fetch_chain(currency="BTC", n_expiries=1)
+
+    assert len(quotes) == 1, f"call+put should merge to one quote, got {len(quotes)}"
+    q = quotes[0]
+    assert q["K"] == 100.0
+    assert q["n"] == 2, "both instruments should be counted"
+    # averaged bid/ask across the two instruments
+    assert q["iv_bid"] == pytest.approx((0.50 + 0.54) / 2)
+    assert q["iv_ask"] == pytest.approx((0.52 + 0.56) / 2)
+    assert q["spot"] == pytest.approx(100.0)
+
+
+def test_fetch_chain_single_instrument_is_not_averaged(monkeypatch):
+    """n == 1 must leave bid/ask untouched (no divide-by-one drift)."""
+    expiry = int((time.time() + 30 * 86400) * 1000)
+    instruments = [_instrument(f"BTC-{expiry}-C-100", expiry, 100)]
+    tickers = {f"BTC-{expiry}-C-100": _ticker(50.0, 52.0)}
+    _install_fake_chain(monkeypatch, instruments, tickers)
+
+    quotes = fetch_chain(currency="BTC", n_expiries=1)
+
+    assert len(quotes) == 1
+    assert quotes[0]["n"] == 1
+    assert quotes[0]["iv_bid"] == pytest.approx(0.50)
+    assert quotes[0]["iv_ask"] == pytest.approx(0.52)
+
+
+def test_fetch_chain_skips_non_positive_iv(monkeypatch):
+    """Instruments with missing/zero bid or ask IV are dropped before merging,
+    so a dead put cannot drag down a live call's mid."""
+    expiry = int((time.time() + 30 * 86400) * 1000)
+    instruments = [
+        _instrument(f"BTC-{expiry}-C-100", expiry, 100),
+        _instrument(f"BTC-{expiry}-P-100", expiry, 100),
+    ]
+    tickers = {
+        f"BTC-{expiry}-C-100": _ticker(50.0, 52.0),
+        f"BTC-{expiry}-P-100": _ticker(0.0, 0.0),  # invalid -> skipped
+    }
+    _install_fake_chain(monkeypatch, instruments, tickers)
+
+    quotes = fetch_chain(currency="BTC", n_expiries=1)
+
+    assert len(quotes) == 1
+    assert quotes[0]["n"] == 1, "invalid put must not be merged in"
+    assert quotes[0]["iv_bid"] == pytest.approx(0.50)
 
 
 def test_init_store_creates_schema(tmp_path):

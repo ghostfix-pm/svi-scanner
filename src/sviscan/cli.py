@@ -38,16 +38,27 @@ def _scan(args):
           file=sys.stderr if args.json else None)
     alerts = scan_surface(slices, rmse_gate=args.gate)
     jsonl_path = Path(args.db).parent / "alerts.jsonl"
+
+    # Single write path for both modes: log + append the jsonl record once, and
+    # additionally print human lines when not in --json mode. (Previously the
+    # --json branch duplicated this whole loop.)
+    verbose = not args.json
+    rows = []
+    with open(jsonl_path, "a") as jl:
+        for a in alerts:
+            aid = log_alert(con, a["kind"], a["T_short"], a["T_long"],
+                            a["k_min"], a["k_max"], a["severity"])
+            rec = {"id": aid, "detected_at": time.time(), **a}
+            jl.write(json.dumps(rec) + "\n")
+            rows.append(rec)
+            if verbose:
+                print(f"[{aid}] {a['kind']}: T={a['T_long'] or a['T_short']:.3f} "
+                      f"k=[{a['k_min']:.2f},{a['k_max']:.2f}] severity={a['severity']:.5f}")
+    if verbose and not alerts:
+        print("no violations detected")
+    resolve_alerts(con, older_than_sec=7 * 86400)
+
     if args.json:
-        rows = []
-        with open(jsonl_path, "a") as jl:
-            for a in alerts:
-                aid = log_alert(con, a["kind"], a["T_short"], a["T_long"],
-                                a["k_min"], a["k_max"], a["severity"])
-                rec = {"id": aid, "detected_at": time.time(), **a}
-                jl.write(json.dumps(rec) + "\n")
-                rows.append(rec)
-        resolve_alerts(con, older_than_sec=7 * 86400)
         out = {
             "currency": args.currency,
             "offline": args.offline,
@@ -60,18 +71,6 @@ def _scan(args):
         }
         print(json.dumps(out, indent=2))
         return
-
-    with open(jsonl_path, "a") as jl:
-        for a in alerts:
-            aid = log_alert(con, a["kind"], a["T_short"], a["T_long"],
-                            a["k_min"], a["k_max"], a["severity"])
-            rec = {"id": aid, "detected_at": time.time(), **a}
-            jl.write(json.dumps(rec) + "\n")
-            print(f"[{aid}] {a['kind']}: T={a['T_long'] or a['T_short']:.3f} "
-                  f"k=[{a['k_min']:.2f},{a['k_max']:.2f}] severity={a['severity']:.5f}")
-    if not alerts:
-        print("no violations detected")
-    resolve_alerts(con, older_than_sec=7 * 86400)
 
 
 def _report(args):
